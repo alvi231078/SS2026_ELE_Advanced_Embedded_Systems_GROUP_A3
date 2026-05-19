@@ -1,1 +1,0 @@
-# SS2026_ELE_Advanced_Embedded_Systems_GROUP_A3
