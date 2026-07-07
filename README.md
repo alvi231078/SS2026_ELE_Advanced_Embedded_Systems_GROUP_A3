@@ -7,32 +7,32 @@ Team A3: Md Ratul Ahmed Alvi · Md Wasib Kamal Nirjon
 
 Overview
 
-A real-time MQTT-based smart parking monitoring and gate control system using a Raspberry Pi and two wirelessly connected ESP32 nodes.
+A real-time MQTT-based smart parking monitoring and gate control system using one Raspberry Pi and two ESP32 nodes connected through WiFi.
 
-The system detects parking slot availability, controls entry and exit gates, and displays the live parking status on a web dashboard. Communication between the Raspberry Pi and ESP32 nodes is handled using the MQTT publish/subscribe protocol over WiFi.
+The system detects whether parking bays are free or occupied, controls entry and exit gates, and displays the live status on a web dashboard. The final project uses MQTT publish/subscribe communication instead of direct HTTP communication from the ESP32 nodes.
 
 * Node 1 — Raspberry Pi:
-    Works as the central server. It runs the MQTT broker, Flask backend, and live web dashboard. It receives parking slot and gate updates from the ESP32 nodes, processes the current parking state, and displays the result on the dashboard.
-* Node 2 — ESP32 Bay Node:
-    Monitors three parking slots using ultrasonic sensors. It detects whether each slot is free or occupied and publishes the slot status to the Raspberry Pi through MQTT.
-* Node 3 — ESP32 Gate Node:
-    Controls the entry and exit gates using servo motors. It uses IR sensors to detect vehicles at the gates and communicates gate events with the Raspberry Pi through MQTT.
+    Works as the central server. It runs the Mosquitto MQTT broker, Python Flask backend, and live web dashboard. It receives MQTT messages from the ESP32 nodes, stores the current parking and gate status, and sends live updates to the browser using Server-Sent Events.
+* Node 2 — ESP32 Parking Bay Node:
+    Uses three ultrasonic sensors to monitor three parking slots. It detects whether each bay is free or occupied and publishes the result to MQTT topics.
+* Node 3 — ESP32 Gate Controller Node:
+    Uses two IR sensors to detect vehicles at the entry and exit gates. It controls two servo motors for the gate barriers. For the entry gate, it requests permission from the Raspberry Pi before opening.
 
 ⸻
 
 Hardware Requirements
 
 Component	Role	Notes
-Raspberry Pi	Central server	Runs MQTT broker, Flask backend, and dashboard
-2× ESP32 Development Boards	Wireless embedded nodes	One ESP32 for parking bays, one ESP32 for gate control
-3× Ultrasonic Sensors	Parking slot detection	Detect whether each parking bay is free or occupied
-2× IR Sensors	Vehicle detection at gates	Detect vehicle presence at entry and exit points
-2× Servo Motors	Gate actuation	Open and close entry and exit barriers
-Resistors	Sensor signal protection/stability	Used with ultrasonic sensor connections
-External/Stable Power Source	Power support	Provides enough current for sensors and servos
-Jumper Wires	Hardware connections	Used to connect sensors and actuators with ESP32 boards
+Raspberry Pi	Central server	Runs Flask backend, dashboard, and MQTT broker
+2× ESP32 Development Boards	Wireless embedded nodes	One for parking bay sensing, one for gate control
+3× Ultrasonic Sensors	Parking bay detection	Detect free or occupied status for Bay 1, Bay 2, and Bay 3
+2× IR Sensors	Vehicle detection	Detect cars at entry and exit gates
+2× 90-degree Servo Motors	Gate control	Open and close the entry and exit barriers
+Resistors	Sensor connection/stability	Used with the ultrasonic sensor setup
+External/Stable Power Source	Power supply support	Helps provide enough current for sensors and servos
+Jumper Wires	Connections	Used for wiring sensors and actuators to ESP32 boards
 MicroSD Card	Raspberry Pi storage	Stores Raspberry Pi OS and project files
-WiFi Network / Mobile Hotspot	Wireless communication	Connects Raspberry Pi and ESP32 nodes on the same network
+WiFi Network / Mobile Hotspot	Wireless communication	Raspberry Pi, laptop, and ESP32 nodes must be on the same network
 
 ⸻
 
@@ -40,29 +40,36 @@ Software & Technologies
 
 Layer	Raspberry Pi	ESP32 Nodes
 Language	Python 3	C/C++
-Framework / Tools	Flask, Mosquitto MQTT Broker	Arduino IDE / PlatformIO
+Framework / Tools	Flask, Mosquitto MQTT Broker, Paho MQTT	Arduino IDE / ESP32 Arduino Core
 Communication	MQTT publish/subscribe over WiFi	MQTT client over WiFi
-Data Format	MQTT topic payloads / JSON-style status data	MQTT topic payloads
-Dashboard	HTML, CSS, JavaScript, Server-Sent Events	—
-Network	Local WiFi / iPhone hotspot	Local WiFi / iPhone hotspot
+Dashboard Update Method	Server-Sent Events	—
+Data Format	MQTT topic payloads and JSON state for dashboard	MQTT payloads
+Network Used in Demo	Alvi’s iPhone hotspot	Alvi’s iPhone hotspot
 
 ⸻
 
 MQTT Communication
 
-The system uses MQTT instead of HTTP to reduce latency and improve real-time communication between the Raspberry Pi and ESP32 nodes.
+The project uses MQTT for communication between the ESP32 nodes and the Raspberry Pi.
 
-The ESP32 nodes publish sensor and gate messages to MQTT topics. The Raspberry Pi subscribes to these topics and updates the dashboard whenever new data arrives.
+The ESP32 parking node publishes bay status messages. The ESP32 gate node publishes gate status messages and sends entry requests. The Raspberry Pi subscribes to these topics, updates the internal state, and publishes an allow/deny response for the entry gate.
 
-Example MQTT topics:
+Main MQTT topics used in the current project:
+
+parking/spot/+/status
+parking/gate/+/status
+parking/gate/entry/request
+parking/gate/entry/allow
+
+Example real topics:
 
 parking/spot/1/status
 parking/spot/2/status
 parking/spot/3/status
 parking/gate/entry/status
 parking/gate/exit/status
-parking/node/bay/status
-parking/node/gate/status
+parking/gate/entry/request
+parking/gate/entry/allow
 
 Example payloads:
 
@@ -70,83 +77,202 @@ free
 occupied
 open
 closed
-online
-offline
+request
+true
+false
 
 ⸻
 
-Sensor Logic
+Parking Bay Sensor Logic
 
-The parking bay node uses ultrasonic sensors to detect whether each parking slot is occupied or free.
+The ESP32 parking bay node reads three ultrasonic sensors.
 
-To avoid false readings from reflected echoes or invalid sensor values, threshold and filtering logic is used:
+The ultrasonic sensors are connected using separate trigger and echo pins:
 
-Distance <= 8 cm              → possible occupied
-Distance below 2 cm or >250 cm → ignored as invalid/no echo
-3 continuous occupied readings → dashboard changes to occupied
-5 continuous free readings     → dashboard changes to free
+Trigger pins: GPIO5, GPIO17, GPIO22
+Echo pins:    GPIO18, GPIO19, GPIO21
 
-This prevents sudden incorrect changes caused by noise, weak echoes, or temporary sensor errors.
+Each parking bay is classified using distance measurement:
 
-The ultrasonic sensors are sampled approximately every 200 ms, meaning the parking bay node performs about 5 full scan cycles per second.
+Distance <= 8 cm               → possible occupied
+Distance below 2 cm or >250 cm → invalid/no echo, ignored
+
+To reduce false detection from ultrasonic echo noise, the code does not immediately change the bay status from one reading. It uses confirmation counters:
+
+3 continuous occupied readings → bay becomes occupied
+5 continuous free readings     → bay becomes free
+
+The parking bay node publishes the result only when the stable status changes.
+
+Example:
+
+parking/spot/1/status → occupied
+parking/spot/2/status → free
+parking/spot/3/status → occupied
+
+The current code waits 60 ms between sensors and 250 ms after each full scan, so the approximate full scan interval is:
+
+3 × 60 ms + 250 ms = 430 ms
+
+So the parking bay node performs about:
+
+1 / 0.43 ≈ 2.3 full scans per second
+
+The actual speed can be slower if an ultrasonic reading waits for the maximum pulseIn() timeout.
 
 ⸻
 
-Gate Logic
+Gate Control Logic
 
-The gate node uses IR sensors to detect vehicles at the entry and exit points.
+The ESP32 gate node uses:
 
-* When a vehicle is detected at the entry gate, the ESP32 asks the Raspberry Pi whether parking space is available.
-* If at least one valid parking bay is free, the entry servo opens.
-* If all bays are occupied, the entry gate remains closed.
-* When a vehicle is detected at the exit gate, the exit servo opens to allow the vehicle to leave.
+Entry IR sensor → GPIO5
+Exit IR sensor  → GPIO25
+Entry servo     → GPIO4
+Exit servo      → GPIO13
 
-The gate IR logic also uses debounce protection to avoid repeated false triggering from the same vehicle.
+The IR sensors are configured as active-low sensors.
+
+When a vehicle is detected at the entry gate, the ESP32 publishes:
+
+parking/gate/entry/request → request
+
+The Raspberry Pi checks whether at least one parking bay is free.
+
+If a bay is free, the Raspberry Pi publishes:
+
+parking/gate/entry/allow → true
+
+If no bay is free, it publishes:
+
+parking/gate/entry/allow → false
+
+The entry gate opens only when the response is true.
+
+For the exit gate, the system opens the exit barrier when the exit IR sensor detects a vehicle.
+
+Gate status is published using:
+
+parking/gate/entry/status → open / closed
+parking/gate/exit/status  → open / closed
 
 ⸻
 
 System States
 
-The Raspberry Pi processes MQTT messages and updates the system status across the following states:
+The Raspberry Pi stores the current status of all bays and gates.
 
-SYSTEM_READY → SLOT_FREE          (one or more parking slots are available)
-SYSTEM_READY → SLOT_OCCUPIED      (one or more parking slots are occupied)
-SYSTEM_READY → PARKING_FULL       (all valid parking slots are occupied)
-SYSTEM_READY → ENTRY_GATE_OPEN    (entry gate opens for an allowed vehicle)
-SYSTEM_READY → ENTRY_GATE_CLOSED  (entry gate remains closed when parking is full)
-SYSTEM_READY → EXIT_GATE_OPEN     (exit gate opens for a leaving vehicle)
-Any          → NODE_OFFLINE       (ESP32 node disconnects or stops sending updates)
-NODE_OFFLINE → SYSTEM_READY       (node reconnects and sends valid data again)
+Initial state:
 
-For safety, if a parking sensor node disconnects, the affected bay status should be treated as unknown instead of being trusted as free.
+Bay 1 = unknown
+Bay 2 = unknown
+Bay 3 = unknown
+Entry gate = closed
+Exit gate = closed
+
+Possible parking bay states:
+
+unknown
+free
+occupied
+
+Possible gate states:
+
+open
+closed
+
+Main system behavior:
+
+ESP32 parking node reads ultrasonic sensors
+→ publishes free/occupied status only after stable confirmation
+→ Raspberry Pi receives MQTT message
+→ Flask server updates internal state
+→ dashboard updates live through Server-Sent Events
+Entry IR detects car
+→ ESP32 gate node asks Raspberry Pi for permission
+→ Raspberry Pi checks if any bay is free
+→ Raspberry Pi publishes true or false
+→ entry servo opens only if allowed
+Exit IR detects car
+→ exit servo opens
+→ gate status is published to dashboard
 
 ⸻
 
-Project Improvements and Design Decisions
+Dashboard
+
+The Raspberry Pi serves a web dashboard using Flask.
+
+The dashboard shows:
+
+Available parking spaces
+Occupied parking spaces
+Bay 1 / Bay 2 / Bay 3 status
+Entry gate status
+Exit gate status
+Live event log
+Last update time
+Latency / live update information
+Light/dark mode button
+
+The dashboard is opened from a laptop or phone connected to the same hotspot:
+
+http://172.20.10.8:5000
+
+If the Raspberry Pi IP changes, the ESP32 MQTT broker IP must be updated in both Arduino sketches.
+
+⸻
+
+Project Issues and Fixes
 
 During development, several issues were found and solved:
 
-* WiFi hotspot connection issue:
-    Raspberry Pi and laptop had to be connected to the same hotspot/network so that the command-line interface and ESP32 communication worked properly.
-* Ultrasonic echo noise:
-    Ultrasonic sensors sometimes detected reflected echoes. A threshold and continuous-reading confirmation method was added to avoid false occupied/free changes.
-* Power issue with IR sensors:
-    Two IR sensors sharing the same 3.3 V supply were not stable enough, so the power source was improved.
+* iPhone hotspot connection issue:
+    The Raspberry Pi, ESP32 nodes, and laptop had to be connected to the same hotspot/network. The Raspberry Pi IP was checked using hostname -I, and the ESP32 MQTT broker IP was updated to match it.
+* Ultrasonic false echo readings:
+    The ultrasonic sensors sometimes received reflected echoes. The solution was to use a smaller occupied threshold of 8 cm, ignore invalid readings below 2 cm or above 250 cm, and use continuous confirmation counters.
+* Ultrasonic cross-talk:
+    A delay was added between reading each ultrasonic sensor to reduce interference between sensors.
+* Power stability issue:
+    The sensor and servo setup needed a stable power source because shared low-current supply caused unreliable behavior.
 * Servo motor issue:
-    Initial servo motors rotated 360 degrees, which was not suitable for gate barriers. They were replaced with 90-degree servo motors.
+    The first servo motors were not suitable because they rotated continuously. The project was changed to use 90-degree servos for gate barriers.
 * HTTP latency issue:
-    The first version used HTTP communication between nodes, but it had higher latency. The final version was reframed using MQTT publish/subscribe communication.
-* Removed sensors:
-    Flame, temperature, and humidity sensors were removed because they did not match the final project scope. The project focus became parking slot detection and gate control.
+    The first version used HTTP, but it was slower and had more latency. The final version uses MQTT publish/subscribe communication.
 
 ⸻
 
 Team Responsibilities
 
-* Nirjon — ESP32 subsystem: ultrasonic sensor setup, IR sensor setup, servo motor testing, sensor threshold testing, hardware wiring, and embedded code testing.
-* Alvi — Raspberry Pi subsystem: MQTT broker setup, Flask backend, dashboard implementation, MQTT data handling, gate access logic, system integration, WiFi/hotspot setup, and final documentation.
+* Md Wasib Kamal Nirjon — ESP32 hardware subsystem: ultrasonic sensor setup, IR sensor setup, servo motor testing, hardware wiring, and embedded node testing.
+* Md Ratul Ahmed Alvi — Raspberry Pi and software subsystem: Mosquitto MQTT setup, Flask backend, dashboard, MQTT message handling, gate permission logic, hotspot setup, and system integration.
 
-Both team members contributed to debugging, testing, hardware integration, GitHub updates, and final project presentation.
+Both team members contributed to debugging, testing, documentation, GitHub updates, and final project presentation.
+
+⸻
+
+How to Run
+
+On the Raspberry Pi:
+
+cd ~
+source .venv/bin/activate
+python3 app.py
+
+Open the dashboard from a device connected to the same hotspot:
+
+http://172.20.10.8:5000
+
+Flash these files to the ESP32 boards:
+
+ultrasonic_node-1.ino     → ESP32 parking bay node
+ir_servo-node-2.ino       → ESP32 gate controller node
+
+Both ESP32 sketches currently use:
+
+SSID: Alvi’s iPhone
+Password: 12345678
+MQTT Broker IP: 172.20.10.8
 
 ⸻
 
@@ -157,4 +283,5 @@ References
 * Flask Documentation
 * Mosquitto MQTT Broker
 * Eclipse Paho MQTT Python Client
+* PubSubClient MQTT Library
 * Arduino Documentation
