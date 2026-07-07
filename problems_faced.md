@@ -1,62 +1,320 @@
-During the development of our Smart Parking System project, we faced several practical hardware and communication issues. These issues helped us improve the final design and make the system more stable.
+# 🚗 Smart Parking System
 
-1. Raspberry Pi Wi-Fi and Mobile Hotspot Issue
+**Advanced Embedded Systems Lab — Summer Term 2026**
+Team A3 · Md Ratul Ahmed Alvi · Md Wasib Kamal Nirjon
 
-One major problem was connecting the Raspberry Pi to an iPhone mobile hotspot. The Raspberry Pi, laptop, and command-line interface access needed to be on the same network so that we could control the Raspberry Pi from the laptop and run the project properly.
+A real-time, MQTT-based parking monitoring and gate control system built on one Raspberry Pi and two ESP32 nodes. The system detects free/occupied parking bays, manages entry/exit gate barriers, and streams live status to a web dashboard over Server-Sent Events (SSE).
 
-At first, the connection was unstable and difficult to manage. We had to manually configure the Raspberry Pi Wi-Fi connection and make sure that both the Raspberry Pi and laptop were connected to the same iPhone hotspot network.
+---
 
-2. Ultrasonic Sensor False Echo Readings
+## Table of Contents
 
-The ultrasonic sensors sometimes detected reflected echoes from nearby surfaces or unwanted objects. This created incorrect distance values and unstable parking spot detection.
+- [Overview](#overview)
+- [System Architecture](#system-architecture)
+- [Hardware Requirements](#hardware-requirements)
+- [Software & Technologies](#software--technologies)
+- [MQTT Communication](#mqtt-communication)
+- [Parking Bay Sensor Logic](#parking-bay-sensor-logic)
+- [Gate Control Logic](#gate-control-logic)
+- [System States](#system-states)
+- [Dashboard](#dashboard)
+- [Getting Started](#getting-started)
+- [Issues & Fixes Log](#issues--fixes-log)
+- [Team Responsibilities](#team-responsibilities)
+- [References](#references)
 
-To solve this, we added threshold filtering and confirmation logic:
+---
 
-Distance ≤ 8 cm → possible occupied
-Distance < 2 cm or > 250 cm → ignored as invalid or no echo
-3 continuous occupied readings → dashboard changes to occupied
-5 continuous free readings → dashboard changes to free
+## Overview
 
-This made the parking spot detection more reliable because the dashboard no longer changed state from a single wrong reading.
+The system uses **MQTT publish/subscribe** for all inter-node communication — replacing an earlier HTTP-based version that suffered from higher latency.
 
-3. IR Sensor Power Issue
+| Node | Role |
+|---|---|
+| **Node 1 — Raspberry Pi** | Central server. Runs the Mosquitto MQTT broker, Flask backend, and live web dashboard. Aggregates MQTT messages from both ESP32 nodes, maintains system state, and pushes live updates to the browser via SSE. |
+| **Node 2 — ESP32 Parking Bay Node** | Reads three ultrasonic sensors to monitor three parking bays and publishes free/occupied status. |
+| **Node 3 — ESP32 Gate Controller Node** | Reads two IR sensors at the entry/exit gates and drives two servo-controlled barriers. The entry gate requests permission from the Raspberry Pi before opening. |
 
-We also faced a power issue with the IR sensors. Two IR sensors were sharing the same 3.3V power source, but the available power was not enough for stable operation.
+---
 
-To fix this, we increased the power supply capacity so that the sensors could receive enough current and work reliably.
+## System Architecture
 
-4. Resistors Added for Ultrasonic Sensors
+```mermaid
+flowchart LR
+    subgraph ESP32_A["ESP32 — Parking Bay Node"]
+        U1[Ultrasonic ×3] --> LOGIC_A[Debounce & Confirm Logic]
+    end
 
-For better signal stability and hardware protection, we added resistors for the ultrasonic sensors. Since we used three ultrasonic sensors, we added three resistors in the circuit.
+    subgraph ESP32_B["ESP32 — Gate Controller Node"]
+        IR[IR Sensors ×2] --> LOGIC_B[Gate Logic]
+        LOGIC_B --> SERVO[Servo Motors ×2]
+    end
 
-This helped make the sensor wiring safer and more stable.
+    subgraph PI["Raspberry Pi — Central Server"]
+        BROKER[Mosquitto MQTT Broker]
+        FLASK[Flask Backend]
+        SSE[Server-Sent Events]
+        BROKER --> FLASK --> SSE
+    end
 
-5. Servo Motor Rotation Problem
+    LOGIC_A -- MQTT publish --> BROKER
+    LOGIC_B -- entry request --> BROKER
+    BROKER -- allow/deny --> LOGIC_B
+    SSE --> DASH[Web Dashboard]
+```
 
-At the beginning, we used servo motors that did not behave as expected. Instead of rotating only to the required gate angle, some servos rotated continuously like 360-degree motors.
+All three nodes communicate over a shared WiFi network (mobile hotspot in the current demo setup).
 
-For our parking gate, we needed controlled angle movement, not continuous rotation. Therefore, we replaced them with 90-degree servo motors, which were more suitable for opening and closing the parking gate.
+---
 
-6. HTTP Latency Problem
+## Hardware Requirements
 
-Initially, all three nodes were running using HTTP communication. However, during testing, we found that HTTP was slower and created more latency, especially when multiple sensor updates and gate commands were happening.
+| Component | Role | Notes |
+|---|---|---|
+| Raspberry Pi | Central server | Runs Flask backend, dashboard, and MQTT broker |
+| 2× ESP32 Dev Boards | Wireless embedded nodes | One for bay sensing, one for gate control |
+| 3× Ultrasonic Sensors | Parking bay detection | Free/occupied status for Bay 1–3 |
+| 2× IR Sensors | Vehicle detection | Entry and exit gate triggers |
+| 2× 90° Servo Motors | Gate control | Entry and exit barrier actuation |
+| Resistors | Sensor stability | Used in the ultrasonic sensor circuit |
+| External/Stable Power Source | Power supply | Provides sufficient current for sensors + servos |
+| Jumper Wires | Wiring | Connects sensors/actuators to ESP32 boards |
+| MicroSD Card | Raspberry Pi storage | Hosts Raspberry Pi OS + project files |
+| WiFi Network / Mobile Hotspot | Wireless comms | All devices must share the same network |
 
-Because of this, we decided to change the communication method from HTTP to MQTT. MQTT is more suitable for IoT projects because it is lightweight, faster, and works well with publish/subscribe communication.
+---
 
-7. Flame Sensor Removed
+## Software & Technologies
 
-We also tested a flame sensor, but it gave unstable and meaningless values. The readings were not useful for our parking system, and it added unnecessary complexity.
+| Layer | Raspberry Pi | ESP32 Nodes |
+|---|---|---|
+| **Language** | Python 3 | C/C++ |
+| **Framework/Tools** | Flask, Mosquitto MQTT Broker, Paho MQTT | Arduino IDE / ESP32 Arduino Core |
+| **Communication** | MQTT publish/subscribe over WiFi | MQTT client over WiFi |
+| **Dashboard Updates** | Server-Sent Events | — |
+| **Data Format** | MQTT topic payloads + JSON state | MQTT payloads |
+| **Demo Network** | iPhone hotspot | iPhone hotspot |
 
-For this reason, we removed the flame sensor from the project.
+---
 
-8. Temperature and Humidity Sensor Removed
+## MQTT Communication
 
-We also considered using a temperature and humidity sensor, but later we realized that it was not directly related to the main purpose of the smart parking system.
+The Raspberry Pi subscribes to bay/gate status topics and entry requests, updates internal state, and publishes an allow/deny response for the entry gate.
 
-Instead of using temperature and humidity sensing, we decided to add two more IR sensors to improve vehicle detection and gate-related sensing.
+**Topic patterns:**
 
-Final Improvement
+```
+parking/spot/+/status
+parking/gate/+/status
+parking/gate/entry/request
+parking/gate/entry/allow
+```
 
-After solving these issues, our project became more stable and practical. We improved the power supply, added sensor filtering logic, replaced unsuitable servo motors, removed unnecessary sensors, and upgraded the communication from HTTP to MQTT.
+**Live topics used:**
 
-These changes helped us make the Smart Parking System more reliable, faster, and better suited for a real embedded IoT application.
+```
+parking/spot/1/status
+parking/spot/2/status
+parking/spot/3/status
+parking/gate/entry/status
+parking/gate/exit/status
+parking/gate/entry/request
+parking/gate/entry/allow
+```
+
+**Example payloads:** `free` · `occupied` · `open` · `closed` · `request` · `true` · `false`
+
+---
+
+## Parking Bay Sensor Logic
+
+**Pin mapping:**
+
+| Sensor | Trigger | Echo |
+|---|---|---|
+| Bay 1 | GPIO5 | GPIO18 |
+| Bay 2 | GPIO17 | GPIO19 |
+| Bay 3 | GPIO22 | GPIO21 |
+
+**Classification thresholds:**
+
+| Distance | Interpretation |
+|---|---|
+| ≤ 8 cm | Possible occupied |
+| < 2 cm or > 250 cm | Invalid reading — ignored |
+
+**Debouncing:** to filter ultrasonic echo noise, status changes require sustained confirmation rather than a single reading:
+
+- **3** consecutive occupied readings → bay marked `occupied`
+- **5** consecutive free readings → bay marked `free`
+
+A status is only published when the confirmed state actually changes, e.g.:
+
+```
+parking/spot/1/status → occupied
+parking/spot/2/status → free
+parking/spot/3/status → occupied
+```
+
+**Scan timing:** 60 ms between sensors + 250 ms after each full pass:
+
+```
+3 × 60 ms + 250 ms = 430 ms  →  ≈ 2.3 full scans/second
+```
+
+> Actual throughput may be lower if a `pulseIn()` call hits its timeout while waiting for an echo.
+
+---
+
+## Gate Control Logic
+
+**Pin mapping:**
+
+| Function | Pin |
+|---|---|
+| Entry IR sensor | GPIO5 |
+| Exit IR sensor | GPIO25 |
+| Entry servo | GPIO4 |
+| Exit servo | GPIO13 |
+
+IR sensors are active-low.
+
+**Entry flow:**
+1. Vehicle detected → ESP32 publishes `parking/gate/entry/request → request`
+2. Raspberry Pi checks whether at least one bay is free
+3. Pi publishes `parking/gate/entry/allow → true` (free bay available) or `false` (no free bay)
+4. Entry servo opens **only** on `true`
+
+**Exit flow:**
+Exit IR detects a vehicle → exit servo opens immediately (no permission check).
+
+**Gate status topics:** `parking/gate/entry/status` and `parking/gate/exit/status` → `open` / `closed`
+
+---
+
+## System States
+
+**Initial state:**
+
+```
+Bay 1        = unknown
+Bay 2        = unknown
+Bay 3        = unknown
+Entry gate   = closed
+Exit gate    = closed
+```
+
+**Valid states:**
+
+| Entity | Possible values |
+|---|---|
+| Parking bay | `unknown`, `free`, `occupied` |
+| Gate | `open`, `closed` |
+
+**End-to-end behavior:**
+
+```
+Ultrasonic reading → confirmed status change → MQTT publish
+    → Pi updates state → dashboard updates via SSE
+
+Entry IR trigger → permission request → Pi checks free-bay count
+    → allow/deny response → servo opens only if allowed
+
+Exit IR trigger → exit servo opens → gate status published
+```
+
+---
+
+## Dashboard
+
+Served by Flask directly from the Raspberry Pi, showing:
+
+- Available / occupied bay counts
+- Individual Bay 1 / 2 / 3 status
+- Entry and exit gate status
+- Live event log
+- Last update timestamp & latency info
+- Light/dark mode toggle
+
+Accessible from any device on the same hotspot:
+
+```
+http://172.20.10.8:5000
+```
+
+> If the Raspberry Pi's IP changes, update the MQTT broker IP in **both** ESP32 sketches.
+
+---
+
+## Getting Started
+
+**1. Start the Raspberry Pi server:**
+
+```bash
+cd ~
+source .venv/bin/activate
+python3 app.py
+```
+
+**2. Open the dashboard** from a device on the same network:
+
+```
+http://172.20.10.8:5000
+```
+
+**3. Flash the ESP32 boards:**
+
+| File | Target |
+|---|---|
+| `ultrasonic_node-1.ino` | ESP32 Parking Bay Node |
+| `ir_servo-node-2.ino` | ESP32 Gate Controller Node |
+
+**Network configuration (current demo):**
+
+```
+SSID:            Alvi's iPhone
+Password:        12345678
+MQTT Broker IP:  172.20.10.8
+```
+
+---
+
+## Issues & Fixes Log
+
+| Issue | Fix |
+|---|---|
+| Hotspot connectivity | All devices joined the same hotspot; Pi IP checked via `hostname -I` and matched in both ESP32 sketches |
+| Ultrasonic false echoes | Lowered occupied threshold to 8 cm, ignored readings < 2 cm or > 250 cm, added confirmation counters |
+| Ultrasonic cross-talk | Added inter-sensor delay to reduce interference |
+| IR sensor power sharing | Increased power supply capacity for the two 3.3V IR sensors |
+| Power instability | Moved sensors/servos to a dedicated stable power source |
+| Ultrasonic wiring stability | Added one resistor per ultrasonic sensor (3 total) |
+| Continuous-rotation servos | Replaced with 90° positional servos for barrier control |
+| HTTP latency | Replaced HTTP polling with MQTT publish/subscribe |
+| Flame sensor | Removed — readings were unstable and added no value |
+| Temperature/humidity sensor | Removed in favor of two additional IR sensors for gate sensing |
+
+> For the full write-up of each issue and its fix, see [`ISSUES_AND_FIXES.md`](./ISSUES_AND_FIXES.md).
+
+---
+
+## Team Responsibilities
+
+| Member | Focus |
+|---|---|
+| **Md Wasib Kamal Nirjon** | ESP32 hardware subsystem — ultrasonic setup, IR sensor setup, servo testing, wiring, node-level testing |
+| **Md Ratul Ahmed Alvi** | Raspberry Pi & software subsystem — Mosquitto setup, Flask backend, dashboard, MQTT message handling, gate permission logic, hotspot setup, system integration |
+
+Both members contributed to debugging, testing, documentation, GitHub updates, and the final presentation.
+
+---
+
+## References
+
+- [ESP32 Arduino Core](https://github.com/espressif/arduino-esp32)
+- [Raspberry Pi Documentation](https://www.raspberrypi.com/documentation/)
+- [Flask Documentation](https://flask.palletsprojects.com/)
+- [Mosquitto MQTT Broker](https://mosquitto.org/)
+- [Eclipse Paho MQTT Python Client](https://www.eclipse.org/paho/)
+- [PubSubClient MQTT Library](https://github.com/knolleary/pubsubclient)
+- [Arduino Documentation](https://docs.arduino.cc/)
