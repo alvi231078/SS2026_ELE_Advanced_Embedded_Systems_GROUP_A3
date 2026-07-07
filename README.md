@@ -10,7 +10,6 @@ A real-time, MQTT-based parking monitoring and gate control system built on one 
 ## Table of Contents
 
 - [Overview](#overview)
-- [System Architecture](#system-architecture)
 - [Hardware Requirements](#hardware-requirements)
 - [Software & Technologies](#software--technologies)
 - [MQTT Communication](#mqtt-communication)
